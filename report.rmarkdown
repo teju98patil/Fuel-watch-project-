@@ -1,0 +1,340 @@
+---
+title: "Project - FuelWatch"
+format:   
+  html: 
+    toc: true
+    toc-depth: 3
+    standalone: true
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+---
+
+```{r}
+#| label: packages-data
+#| message: false
+
+library(tidyverse)
+library(lubridate)
+library(gt)
+```
+
+These packages are used for data manipulation (tidyverse), date handling (lubridate), and table formatting (gt).
+
+
+## Basic information about FuelWatch in Western Australia  {#sec-1}
+
+[Fuel Watch](https://www.fuelwatch.wa.gov.au) is a fuel monitoring service created by the Government of Western Australia. It provides information about fuel prices at the petrol stations in Western Australia. This analysis is about the fuel prices of twelve months until October 2024. 
+
+Here is a geographic overview about the regions from the Government of Western Australian. 
+
+![](https://prod-iwa-public-files.s3.ap-southeast-2.amazonaws.com/public/inline-images/WA_regions_for%20digi%20SIS-11_resized.png)
+
+FuelWatch provides transparent daily fuel price information across Western Australia. The dataset covers ULP prices for one full year, enabling analysis of spatial, temporal, and competitive pricing patterns.
+
+### Data Loading & Cleaning
+```{r}
+library(tidyverse)
+library(glue)
+
+ # Create filenames vector
+dates <- seq(as.Date("2024-10-01"), as.Date("2025-09-01"), by = "month")
+filenames <- glue("FuelwatchRetail-{format(dates, '%m-%Y')}.csv")
+
+# Read all CSVs into one dataframe
+data <- read_csv(filenames) %>%
+  select(-`...11`) %>%
+  filter(PRODUCT_DESCRIPTION == "ULP") %>%
+  mutate(DATE = as.Date(PUBLISH_DATE, format = "%d/%m/%Y"),
+  WEEKDAY = wday(DATE, label = TRUE)
+  ) %>%
+    rename(
+    REGION = REGION_DESCRIPTION,
+    AREA = AREA_DESCRIPTION,
+    BRAND = BRAND_DESCRIPTION,
+    PRICE = PRODUCT_PRICE
+  ) %>%
+    select(DATE, WEEKDAY, REGION, AREA, BRAND, PRICE, everything())
+
+
+glimpse(data)
+summary(data)
+```
+
+All monthly FuelWatch files are combined into one dataset. Only ULP prices are kept, dates are standardized, and meaningful variable names are created for analysis.
+
+## Overview Regions and Brands {#sec-2}
+
+### 2.1. Bar chart of Regions (number of data points )
+
+```{r}
+library(forcats)
+
+data |>
+  count(REGION) |>
+  mutate(REGION = fct_rev(fct_infreq(REGION))) |>
+  ggplot(aes(x = REGION, y = n, fill = REGION)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Number of Data Points per Region", y = "Count", x = "Region") +
+  theme(legend.position = "none")
+```
+
+The majority of observations come from metropolitan regions, indicating higher station density and reporting frequency. Remote regions have fewer observations, reflecting lower market competition.
+
+### 2.2. Stacked bar chart for brands colored by region
+
+```{r}
+data |>
+  count(BRAND, REGION) |>
+  ggplot(aes(x = fct_infreq(BRAND), y = n, fill = REGION)) +
+  geom_col() +
+  labs(title = "Brand Distribution by Region", x = "Brand", y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+  legend.position = "bottom",
+  legend.title = element_text(hjust = 0.5))
+```
+
+Large fuel brands dominate metropolitan regions, while smaller or independent brands appear more frequently in regional and remote areas. This suggests differing competitive structures across regions.
+
+## Price trends {#sec-3}
+### 3.1. Average price over time
+```{r}
+data |>
+  group_by(DATE) |>
+  summarise(AVG_PRICE = mean(PRICE), .groups = "drop") |>
+  ggplot(aes(x = DATE, y = AVG_PRICE)) +
+  geom_line(color = "blue") +
+  labs(title = "Average ULP Price Over Time", x = "Date", y = "Average Price")
+```
+
+Average ULP prices show clear temporal variation over the year, indicating systematic price movements rather than random daily fluctuations.
+
+### 3.2. Average price by weekday 
+
+```{r}
+avg_price_weekday <- data %>%
+  group_by(WEEKDAY) %>%
+  summarise(AVG_PRICE = mean(PRICE), .groups = "drop")
+
+ggplot(avg_price_weekday, aes(x = WEEKDAY, y = AVG_PRICE, group = 1)) +
+  geom_line(color = "darkgreen") +
+  geom_point(size = 2) +
+  labs(title = "Average ULP Price by Weekday", x = "Weekday", y = "Average Price")
+```
+
+Prices vary systematically by weekday, supporting the existence of weekly pricing cycles. This reflects strategic pricing behavior rather than cost-driven changes.
+
+### 3.3. Average price per region over time (faceted)
+```{r}
+avg_price_region <- data %>%
+  group_by(REGION, DATE) %>%
+  summarise(AVG_PRICE = mean(PRICE), .groups = "drop")
+
+ggplot(avg_price_region, aes(x = DATE, y = AVG_PRICE)) +
+  geom_line(color = "purple") +
+  facet_wrap(~ REGION, ncol = 2) +
+  labs(title = "Average ULP Price per Region Over Time", x = "DATE", y = "Average Price")
+```
+
+Regional price trends differ in both level and volatility. Metropolitan regions show stronger oscillations, while remote regions tend to have smoother price paths.
+
+
+## Characterization Price Dynamics {#sec-4}
+### 4.1. Compute station-level statistics
+
+```{r}
+data <- data %>%
+  group_by(TRADING_NAME, BRAND) %>%
+  mutate(
+    N_OBS_TRADING_NAME = n(),
+    MEAN_PRICE = mean(PRICE),
+    SD_PRICE = sd(PRICE)
+  ) %>%
+    ungroup()
+```
+
+Stations differ substantially in both average price and price variability, indicating heterogeneous pricing strategies across the market.
+
+Now each petrol station has three new features:
+1. N_OBS_TRADING_NAME = how many days it was observed
+2. MEAN_PRICE = average price across all days
+3. SD_PRICE = price variability across all days
+
+### 4.2. Filter stations with complete data and create data_stations
+
+```{r}
+max_obs <- max(data$N_OBS_TRADING_NAME)
+
+data_stations <- data %>%
+  filter(N_OBS_TRADING_NAME == max_obs) %>%
+  select(REGION, TRADING_NAME, BRAND, MEAN_PRICE, SD_PRICE) %>%
+  distinct()
+```
+
+### 4.3 Histogram of price variability (SD_PRICE)
+
+```{r}
+ggplot(data_stations, aes(x = SD_PRICE)) +
+  geom_histogram(binwidth = 0.02, fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Price Variability (SD) Across Stations",
+  x = "Standard Deviation of Price", y = "Count")
+```
+
+Most stations have moderate price variability, while a smaller number exhibit strong price fluctuations, suggesting active price cycling.
+
+### 4.4 Scatter plot: MEAN_PRICE vs SD_PRICE per station
+
+```{r}
+ggplot(data_stations, aes(x = MEAN_PRICE, y = SD_PRICE, color = REGION)) +
+  geom_point(alpha = 0.7, size = 2) +
+  labs(title = "Station Mean Price vs Price Variability", x = "Mean Price", y = "SD of Price" )
+```
+
+Stations with higher average prices often also show higher variability, especially in metropolitan regions, indicating aggressive pricing strategies.
+
+### 4.5 Brand-level aggregation and scatter plot
+
+```{r}
+data_brands <- data_stations %>%
+  group_by(BRAND) %>%
+  summarise(
+    AVG_MEAN_PRICE = mean(MEAN_PRICE),
+    AVG_SD_PRICE = mean(SD_PRICE),
+    N = n(),
+    .groups = "drop"
+  )
+
+  ggplot(data_brands, aes(x = AVG_MEAN_PRICE, y = AVG_SD_PRICE, size = N, label = BRAND)) +
+    geom_point(alpha = 0.3) +
+    geom_text(vjust = -1, hjust = 0.5) +
+    scale_size_area(max_size = 10) +
+    labs(title = "Brand Average Mean vs SD Price", x = "Average Mean Price", y = "Average SD Price")
+```
+
+Some brands consistently combine higher prices with higher variability, suggesting coordinated pricing behavior at the brand level.
+
+## Clustering {#sec-5}
+### 5.1 Prepare the station-day matrix
+
+```{r}
+max_days <- 365
+
+data_stations_days_as_features <- data %>%
+  filter(N_OBS_TRADING_NAME == max_days) %>%
+  select(TRADING_NAME, REGION, BRAND, MEAN_PRICE, SD_PRICE, DATE, PRICE) %>%
+  pivot_wider(
+    names_from = DATE,
+    values_from = PRICE
+  )
+
+  nrow(data_stations_days_as_features)
+```
+
+Only stations with complete daily observations were retained, ensuring that clustering is based on comparable price histories.
+
+### 5.2 K-means clustering
+
+```{r}
+day_cols <- data_stations_days_as_features %>%
+  select(where(is.numeric)) %>%
+  colnames()
+
+
+day_matrix <- data_stations_days_as_features %>%
+  select(all_of(day_cols)) %>%
+  mutate(across(everything(), as.numeric)) %>%
+  na.omit()
+
+set.seed(0)
+kmeans_stations <- kmeans(day_matrix, centers = 3)
+```
+
+### 5.3 Add cluster labels to stations
+
+```{r}
+data_stations_cluster <- data_stations_days_as_features %>%
+  select(TRADING_NAME, REGION, BRAND, MEAN_PRICE, SD_PRICE) %>%
+  mutate(CLUSTER = factor(kmeans_stations$cluster))
+
+head(data_stations_cluster)
+```
+
+Stations are grouped into three distinct clusters, representing different pricing behaviors rather than geographic locations alone.
+
+### 5.4 Scatter plot: MEAN_PRICE vs SD_PRICE colored by cluster
+
+```{r}
+ggplot(data_stations_cluster, aes(x = MEAN_PRICE, y = SD_PRICE, color = CLUSTER)) +
+geom_point(alpha = 0.7, size = 2) +
+labs(title = "Station Mean Price vs SD by Cluster", x = "Mean Price", y = "Standard Deviation of Price") +
+theme_minimal()
+
+```
+
+Clusters clearly separate stations with stable prices, moderate oscillations, and strong oscillatory behavior.
+
+### 5.5 Average price trend per cluster
+
+```{r}
+# Add cluster info back to the full data
+
+data_clustered <- data %>%
+filter(N_OBS_TRADING_NAME == max_days) %>%
+left_join(
+data_stations_cluster %>% select(TRADING_NAME, CLUSTER),
+by = "TRADING_NAME"
+)
+
+# Compute average price per cluster over time
+
+avg_price_cluster <- data_clustered %>%
+group_by(CLUSTER, DATE) %>%
+summarise(AVG_PRICE = mean(PRICE), .groups = "drop")
+
+# Plot average price trend per cluster
+
+ggplot(avg_price_cluster, aes(x = DATE, y = AVG_PRICE, color = CLUSTER)) +
+geom_line(linewidth = 1) +
+labs(title = "Average Price Trend per Cluster", x = "Date", y = "Average Price") +
+theme_minimal()
+```
+
+One cluster exhibits strong cyclical price movements, while others maintain relatively stable pricing, confirming heterogeneous pricing strategies.
+
+### 5.6 Tables: Number of stations per cluster by region and brand
+
+```{r}
+table_region <- data_stations_cluster %>%
+  count(CLUSTER, REGION)
+
+table_brand <- data_stations_cluster %>%
+  count(CLUSTER, BRAND)
+
+# Display tables
+table_region
+table_brand
+
+
+```
+
+Certain clusters are concentrated in metropolitan regions and dominant brands, while others are more evenly distributed, indicating that competition intensity influences pricing patterns.
+
+## Potential explanation {#sec-6}
+
+The clustering analysis reveals distinct price trend patterns among petrol stations in Western Australia. These patterns can be explained by a combination of regional market conditions, competitive dynamics, and consumer behavior in an unregulated fuel market with high price transparency.
+
+Why do we have generally higher and lower prices in some regions?
+Price levels differ across regions mainly due to differences in competition intensity, transportation costs, and demand density. Metropolitan areas typically have more petrol stations competing closely with each other, which can push prices downward on average. In contrast, regional and remote areas often have fewer stations, higher logistics and transportation costs, and less competitive pressure, resulting in persistently higher average prices.
+
+Why do price oscillations happen?
+Price oscillations are a result of strategic pricing behavior under competition. Stations periodically raise prices sharply and then gradually lower them over several days. This behavior is often interpreted as an attempt to temporarily increase margins while competitors follow similar pricing cycles. Because prices are publicly visible through FuelWatch, stations can easily observe competitors’ prices and coordinate implicitly without direct communication.
+
+Where do oscillations happen, and why there?
+Oscillations tend to occur primarily in highly competitive urban regions where many stations operate in close proximity. In such markets, stations react quickly to each other’s price changes, leading to synchronized pricing cycles. In contrast, stations in less competitive or more remote regions often show smoother and more stable price trends, as there is less incentive or pressure to engage in aggressive price cycling.
+
+Do stations with oscillating prices realize higher average prices?
+From the clustering results, stations that exhibit strong price oscillations often have higher price variability (higher standard deviation) and sometimes slightly higher average prices compared to more stable stations in the same region. However, higher average prices do not necessarily imply higher profits.
+
+Can we determine earnings from the available data?
+No, the current data does not allow us to determine whether oscillating stations achieve higher earnings. While we observe prices, we do not observe sales volumes, operating costs, or customer demand responses. To answer this question properly, additional data would be required, such as fuel volumes sold per day, station-level cost structures, or consumer switching behavior in response to price changes.
